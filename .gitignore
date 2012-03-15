@@ -1,0 +1,5 @@
+# Ignore ...
+*.pyo
+*.pyc
+*.swo
+*.swp

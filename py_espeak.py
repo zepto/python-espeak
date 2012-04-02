@@ -4,17 +4,17 @@
 #
 # A TTS module using the espeak library.
 # Copyright (C) 2012 Josiah Gordon <josiahg@gmail.com>
-# 
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
@@ -23,9 +23,7 @@
 
 """
 
-from ctypes import *
-from functools import wraps
-import sys
+from functools import wraps as functools_wraps
 
 from espeak import _espeak
 
@@ -36,14 +34,16 @@ def _espeak_callback(wav, numsamples, events):
     """ Callback for espeak wav data retrieval.
 
     """
-    
+
     global speaking, data_buffer
-    
+
     if wav:
-        data_buffer += string_at(wav, numsamples * sizeof(c_short))
+        data_buffer += _espeak.string_at(wav, numsamples *
+                                         _espeak.sizeof(_espeak.c_short))
 
     # Return value 0 means to keep playing 1 means to stop.
     return 0 if speaking else 1
+
 
 class Espeak(object):
     """ Espeak wrapper for text to speech synthesis
@@ -61,7 +61,6 @@ class Espeak(object):
         self._rate = rate
         espeak_synth_callback = _espeak.t_espeak_callback(_espeak_callback)
         _espeak.espeak_SetSynthCallback(espeak_synth_callback)
-
 
     def _err_check(self, ret_val):
         """ Checks the 'ret_val' for error status (<0) and prints and error
@@ -200,7 +199,7 @@ class Espeak(object):
 
         """
 
-        @wraps(func)
+        @functools_wraps(func)
         def wrapper(self, *args):
             """ Wraps the function.
 
@@ -252,10 +251,13 @@ class Espeak(object):
         read_size = size * 1 * (16 >> 3)
         data = data_buffer[:read_size]
         data_buffer = data_buffer[read_size:]
+
         return data
 
 
 if __name__ == '__main__':
+    import sys
+
     if sys.argv[1:]:
         text = sys.argv[1]
     else:

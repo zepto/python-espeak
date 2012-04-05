@@ -24,25 +24,24 @@
 """
 
 from functools import wraps as functools_wraps
+from sys import stderr as sys_stderr
 
 from espeak import _espeak
 
-speaking = False
-data_buffer = b''
-
-def _espeak_callback(wav, numsamples, events):
-    """ Callback for espeak wav data retrieval.
+def redirect_cstd():
+    """ Redirect ctypes stderr.
 
     """
 
-    global speaking, data_buffer
-
-    if wav:
-        data_buffer += _espeak.string_at(wav, numsamples *
-                                         _espeak.sizeof(_espeak.c_short))
-
-    # Return value 0 means to keep playing 1 means to stop.
-    return 0 if speaking else 1
+    import sys
+    import os
+    sys.stdout.flush()
+    oldstderr = os.dup(2)
+    r, w = os.pipe()
+    os.dup2(w, 2)
+    os.close(w)
+    os.close(r)
+    sys.stderr = os.fdopen(oldstderr, 'w')
 
 
 class Espeak(object):
@@ -55,12 +54,77 @@ class Espeak(object):
 
         """
 
-        output = _espeak.AUDIO_OUTPUT_RETRIEVAL
+        self._output = output
+        self._position = 0
+        self._data_buffer = b''
+        self._speaking = False
+        self._buffer_size = 4096
 
-        rate = self._err_check(_espeak.espeak_Initialize(output, 0, None, 0))
-        self._rate = rate
-        espeak_synth_callback = _espeak.t_espeak_callback(_espeak_callback)
-        _espeak.espeak_SetSynthCallback(espeak_synth_callback)
+        self._rate = self._err_check(_espeak.espeak_Initialize(output, 0,
+                                                               None, 0))
+        if output == _espeak.AUDIO_OUTPUT_RETRIEVAL:
+            espeak_synth_callback = _espeak.t_espeak_callback(self)
+            _espeak.espeak_SetSynthCallback(espeak_synth_callback)
+        else:
+            self.write = self.speak_text
+
+    def __call__(self, wav, numsamples, events):
+        """ Make the class callable so it can be called as the espeak synth
+        callback.
+
+        """
+
+        # Stop if the end of the synthesis is reached.
+        if not wav: return 1
+
+        # Append the data to the buffer.
+        self._data_buffer += _espeak.string_at(wav, numsamples *
+                                               _espeak.sizeof(_espeak.c_short))
+
+        # Return value 0 means to keep playing 1 means to stop.
+        return 0 if self._speaking else 1
+
+    def __enter__(self):
+        """ Provides the ability to use pythons with statement.
+
+        """
+
+        try:
+            return self
+        except Exception as err:
+            print(err)
+            return None
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """ Close the file when finished.
+
+        """
+
+        try:
+            self.close()
+            return not bool(exc_type)
+        except Exception as err:
+            print(err)
+            return False
+
+    def __iter__(self):
+        """ Returns an iter of this object.
+
+        """
+
+        return self
+
+    def __next__(self) -> bytes:
+        """ Return the next buffer.
+
+        """
+
+        data = self.read(self._buffer_size)
+
+        if not data:
+            raise StopIteration
+        else:
+            return data
 
     def _err_check(self, ret_val):
         """ Checks the 'ret_val' for error status (<0) and prints and error
@@ -70,8 +134,8 @@ class Espeak(object):
         try:
             assert(ret_val >= 0)
         except Exception as err:
-            print("There was and error %s %s" % (err, ret_val), file=sys.stderr)
-        
+            print("There was and error %s %s" % (err, ret_val), file=sys_stderr)
+
         return ret_val
 
     @property
@@ -170,12 +234,15 @@ class Espeak(object):
         return self._rate
 
     @property
-    def isplaying(self):
+    def isspeaking(self):
         """ Is it speaking.
 
         """
 
-        return bool(_espeak.espeak_IsPlaying())
+        if self._output == _espeak.AUDIO_OUTPUT_RETRIEVAL:
+            return self._speaking
+        else:
+            return bool(_espeak.espeak_IsPlaying())
 
     def list_voices(self):
         """ Print a list of available voices.
@@ -205,12 +272,11 @@ class Espeak(object):
 
             """
 
-            global speaking
-
-            if func.__name__ == 'speak_text':
-                speaking = True
+            if func.__name__ != 'close':
+                self._position = 0
+                self._speaking = True
             else:
-                speaking = False
+                self._speaking = False
 
             ret_val = func(self, *args)
 
@@ -219,20 +285,26 @@ class Espeak(object):
         return wrapper
 
     @_update_speaking
-    def speak_text(self, text):
+    def speak_text(self, text: str) -> int:
         """ Speak the text to the audio buffer.
 
         """
 
         text = text.strip().encode() + b'\0'
         text_length = len(text)
+
+        if self._output != _espeak.AUDIO_OUTPUT_RETRIEVAL:
+            redirect_cstd()
+
         self._err_check(_espeak.espeak_Synth(text, text_length, 0,
                                              _espeak.POS_CHARACTER, 0,
                                              _espeak.espeakCHARS_UTF8, None,
                                              None))
 
+        return text_length
+
     @_update_speaking
-    def stop(self):
+    def close(self):
         """ Stop speaking.
 
         """
@@ -241,16 +313,13 @@ class Espeak(object):
         self._err_check(_espeak.espeak_Cancel())
         self._err_check(_espeak.espeak_Terminate())
 
-    def read(self, size=4096):
-        """ Read from the global data buffer.
+    def read(self, size=4096) -> bytes:
+        """ Read from the data buffer.
 
         """
 
-        global data_buffer
-
-        read_size = size * 1 * (16 >> 3)
-        data = data_buffer[:read_size]
-        data_buffer = data_buffer[read_size:]
+        data = self._data_buffer[self._position:self._position + size]
+        self._position += len(data)
 
         return data
 
@@ -263,20 +332,17 @@ if __name__ == '__main__':
     else:
         text = "Hello, World!"
 
-    espeak = Espeak()
-    espeak.range = 100
-    espeak.voice = 'en-us'
-    #espeak.rate = 200
-    #espeak.volume = 100
-    espeak.speak_text(text)
-    espeak.stop()
+    with Espeak(_espeak.AUDIO_OUTPUT_RETRIEVAL) as espeak:
+        espeak.range = 100
+        espeak.voice = 'en-us'
+        espeak.rate = 200
+        espeak.volume = 100
+        espeak.speak_text(text)
 
-    import ossaudiodev
-    dsp = ossaudiodev.open('w')
-    f = ossaudiodev.AFMT_S16_LE
-    dsp.setparameters(f, 1, espeak.sample_rate, True)
+        import ossaudiodev
+        dsp = ossaudiodev.open('w')
+        f = ossaudiodev.AFMT_S16_LE
+        dsp.setparameters(f, 1, espeak.sample_rate, True)
 
-    data = b' '
-    while data:
-        data = espeak.read()
-        dsp.write(data)
+        for data in espeak:
+            dsp.write(data)

@@ -28,6 +28,9 @@ from sys import stderr as sys_stderr
 
 from espeak import _espeak
 
+PLAYBACK = _espeak.AUDIO_OUTPUT_PLAYBACK
+RETRIEVAL = _espeak.AUDIO_OUTPUT_RETRIEVAL
+
 def redirect_cstd():
     """ Redirect ctypes stderr.
 
